@@ -1,12 +1,14 @@
 """Gateway API - The Kill Switch"""
-from fastapi import APIRouter, Request, HTTPException, Header, status
+from fastapi import APIRouter, Request, HTTPException, Header, Response, status
 from typing import Optional, Dict, Any
 import json
 import logging
+import uuid
 from datetime import datetime
 
 from mtp_core.services.verification import VerificationService
 from mtp_core.services.audit import AuditService
+from mtp_core.services.rate_limiter import rate_limiter
 from mtp_core.models.audit import AuditEventCreate, EventType, EventCategory, EventStatus
 from mtp_core.core.crypto import hash_data
 from mtp_core.core.config import settings
@@ -18,9 +20,15 @@ verification_service = VerificationService()
 audit_service = AuditService()
 
 
+def generate_request_id() -> str:
+    """Generate unique request correlation ID for tracing"""
+    return f"MTP-REQ-{uuid.uuid4().hex[:16].upper()}"
+
+
 @router.post("/proxy")
 async def proxy_request(
     request: Request,
+    response: Response,
     mtp_id: str = Header(..., alias="X-MTP-ID"),
     signature: str = Header(..., alias="X-MTP-Signature"),
     timestamp: str = Header(..., alias="X-MTP-Timestamp"),
@@ -29,26 +37,49 @@ async def proxy_request(
 ):
     """
     The Kill Switch.
-    
+
     This endpoint intercepts ALL AI agent requests.
-    
+
     Flow:
+    0. Rate limit check (prevent DoS)
     1. Verify Ed25519 signature (Is this agent real?)
     2. Check agent status (Is it active?)
     3. Check mandate (Is this action allowed?)
     4. If ANY check fails → 403 Forbidden (REQUEST BLOCKED)
     5. If all checks pass → Log to audit trail → Allow request
-    
+
     Headers:
         X-MTP-ID: Agent's MTP ID
         X-MTP-Signature: Ed25519 signature (base64)
         X-MTP-Timestamp: ISO timestamp
         X-MTP-Action: Action being performed (optional)
         X-MTP-Transaction-Value: Monetary value (optional)
-    
+
+    Response Headers:
+        X-MTP-Request-ID: Unique correlation ID for tracing
+        X-RateLimit-Remaining: Remaining requests in current window
+        X-RateLimit-Reset: Seconds until rate limit resets
+
     The Pitch:
     "Mr. Banker, I can stop a rogue agent in 100 milliseconds."
     """
+    # Generate request correlation ID
+    request_id = generate_request_id()
+    response.headers["X-MTP-Request-ID"] = request_id
+
+    # ---- STEP 0: Rate Limit Check ----
+    is_allowed, remaining, retry_after = await rate_limiter.check_rate_limit(mtp_id)
+    response.headers["X-RateLimit-Remaining"] = str(remaining)
+    response.headers["X-RateLimit-Reset"] = str(retry_after)
+
+    if not is_allowed:
+        logger.warning(f"[{request_id}] Rate limit exceeded for {mtp_id}")
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"Rate limit exceeded. Retry after {retry_after} seconds.",
+            headers={"Retry-After": str(retry_after)}
+        )
+
     try:
         # Parse request body
         request_body = await request.json()
@@ -64,8 +95,8 @@ async def proxy_request(
     )
     
     if not is_valid:
-        logger.warning(f"Request BLOCKED for {mtp_id}: {error_msg}")
-        
+        logger.warning(f"[{request_id}] Request BLOCKED for {mtp_id}: {error_msg}")
+
         # Log blocked attempt
         await audit_service.log_event(AuditEventCreate(
             mtp_id=mtp_id,
@@ -75,11 +106,15 @@ async def proxy_request(
             input_hash=hash_data(json.dumps(request_body).encode()),
             output_hash=hash_data(b"BLOCKED"),
             status=EventStatus.BLOCKED,
-            error_details={"reason": error_msg}
+            session_id=request_id,
+            error_details={"reason": error_msg, "request_id": request_id}
         ))
-        
+
+        # Use 401 for identity failures, 403 for authorization failures
+        status_code = status.HTTP_401_UNAUTHORIZED if "not found" in error_msg or "Invalid signature" in error_msg else status.HTTP_403_FORBIDDEN
+
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
+            status_code=status_code,
             detail=f"Request blocked: {error_msg}"
         )
     
@@ -92,8 +127,8 @@ async def proxy_request(
         )
         
         if not is_allowed:
-            logger.warning(f"Mandate violation for {mtp_id}: {violation_reason}")
-            
+            logger.warning(f"[{request_id}] Mandate violation for {mtp_id}: {violation_reason}")
+
             # Log mandate violation
             await audit_service.log_event(AuditEventCreate(
                 mtp_id=mtp_id,
@@ -103,13 +138,15 @@ async def proxy_request(
                 input_hash=hash_data(json.dumps(request_body).encode()),
                 output_hash=hash_data(b"BLOCKED"),
                 status=EventStatus.BLOCKED,
+                session_id=request_id,
                 value_transferred=transaction_value,
                 error_details={
                     "reason": violation_reason,
-                    "action": action
+                    "action": action,
+                    "request_id": request_id
                 }
             ))
-            
+
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"Mandate violation: {violation_reason}"
@@ -124,14 +161,16 @@ async def proxy_request(
         input_hash=hash_data(json.dumps(request_body).encode()),
         output_hash=hash_data(b"SUCCESS"),
         status=EventStatus.SUCCESS,
+        session_id=request_id,
         value_transferred=transaction_value
     ))
-    
+
     # ---- STEP 4: Allow Request ----
-    logger.info(f"Request ALLOWED for {mtp_id}: {action}")
-    
+    logger.info(f"[{request_id}] Request ALLOWED for {mtp_id}: {action}")
+
     return {
         "status": "allowed",
+        "request_id": request_id,
         "mtp_id": mtp_id,
         "action": action,
         "message": "Request verified and allowed",

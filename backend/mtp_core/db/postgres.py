@@ -156,6 +156,40 @@ async def init_db():
         
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_events_mtp_id ON audit_events(mtp_id, timestamp DESC);")
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_events_merkle_root ON audit_events(merkle_root);")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_events_event_type ON audit_events(event_type);")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_events_status ON audit_events(status);")
+
+        # CRITICAL: Audit Event Immutability Enforcement
+        # Once an audit event is created, it CANNOT be modified or deleted.
+        # This is a regulatory requirement for forensic-grade audit trails.
+        await conn.execute("""
+            CREATE OR REPLACE FUNCTION prevent_audit_modification()
+            RETURNS TRIGGER AS $$
+            BEGIN
+                RAISE EXCEPTION 'IMMUTABILITY VIOLATION: Audit events cannot be modified or deleted. Event ID: %',
+                    CASE TG_OP
+                        WHEN 'UPDATE' THEN OLD.event_id::TEXT
+                        WHEN 'DELETE' THEN OLD.event_id::TEXT
+                    END;
+            END;
+            $$ LANGUAGE plpgsql;
+        """)
+
+        # Create trigger only if it doesn't exist
+        await conn.execute("""
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_trigger WHERE tgname = 'audit_events_immutable'
+                ) THEN
+                    CREATE TRIGGER audit_events_immutable
+                        BEFORE UPDATE OR DELETE ON audit_events
+                        FOR EACH ROW EXECUTE FUNCTION prevent_audit_modification();
+                END IF;
+            END;
+            $$;
+        """)
+        logger.info("Audit event immutability trigger enforced")
         
         # Mandates table
         await conn.execute("""
@@ -178,6 +212,10 @@ async def init_db():
             )
         """)
         
+        # Additional indexes for mandates
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_mandates_mtp_id ON mandates(mtp_id);")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_mandates_is_active ON mandates(is_active);")
+
         # Merkle Batches table
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS merkle_batches (
@@ -191,6 +229,15 @@ async def init_db():
                 ipfs_uri TEXT
             )
         """)
+
+        # Pending Batch Events table - Persists batch queue across restarts
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS pending_batch_events (
+                event_id UUID PRIMARY KEY REFERENCES audit_events(event_id),
+                added_at TIMESTAMP NOT NULL DEFAULT NOW()
+            )
+        """)
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_pending_batch_events_added_at ON pending_batch_events(added_at);")
         
         # Disputes table
         await conn.execute("""
@@ -222,4 +269,38 @@ async def init_db():
             )
         """)
         
+        # Additional indexes for disputes
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_disputes_status ON disputes(status);")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_disputes_respondent_mtp_id ON disputes(respondent_mtp_id);")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_disputes_respondent_org_id ON disputes(respondent_org_id);")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_disputes_filed_at ON disputes(filed_at DESC);")
+
+        # Rate Limiting table - Tracks request counts per agent
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS rate_limit_buckets (
+                mtp_id VARCHAR(64) PRIMARY KEY,
+                request_count INTEGER DEFAULT 0,
+                window_start TIMESTAMP NOT NULL DEFAULT NOW(),
+                last_request_at TIMESTAMP NOT NULL DEFAULT NOW()
+            )
+        """)
+
+        # API Keys table - Organization-level authentication
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS api_keys (
+                id UUID PRIMARY KEY,
+                org_id UUID NOT NULL REFERENCES organizations(id),
+                key_hash VARCHAR(128) NOT NULL UNIQUE,
+                name VARCHAR(128) NOT NULL,
+                permissions JSONB DEFAULT '[]',
+                rate_limit_per_minute INTEGER DEFAULT 1000,
+                is_active BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                expires_at TIMESTAMP,
+                last_used_at TIMESTAMP
+            )
+        """)
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_api_keys_org_id ON api_keys(org_id);")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_api_keys_is_active ON api_keys(is_active);")
+
         logger.info("Database schema initialized successfully")
