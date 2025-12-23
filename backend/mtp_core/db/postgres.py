@@ -303,4 +303,39 @@ async def init_db():
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_api_keys_org_id ON api_keys(org_id);")
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_api_keys_is_active ON api_keys(is_active);")
 
+        # Trust Score History table - Track score changes over time
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS trust_score_history (
+                id UUID PRIMARY KEY,
+                mtp_id VARCHAR(64) NOT NULL,
+                score INTEGER NOT NULL CHECK (score >= 0 AND score <= 1000),
+                score_components JSONB DEFAULT '{}',
+                change_reason VARCHAR(256),
+                previous_score INTEGER,
+                calculated_at TIMESTAMP NOT NULL DEFAULT NOW()
+            )
+        """)
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_trust_score_history_mtp_id ON trust_score_history(mtp_id, calculated_at DESC);")
+
+        # Certifications table - MTP-CERT compliance certifications
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS certifications (
+                id UUID PRIMARY KEY,
+                mtp_id VARCHAR(64) NOT NULL,
+                cert_type VARCHAR(64) NOT NULL,
+                cert_name VARCHAR(256) NOT NULL,
+                jurisdiction VARCHAR(8) NOT NULL,
+                issued_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                expires_at TIMESTAMP,
+                status VARCHAR(16) NOT NULL DEFAULT 'ACTIVE',
+                requirements_met JSONB DEFAULT '{}',
+                issued_by VARCHAR(256),
+                certificate_hash VARCHAR(128),
+                blockchain_tx_hash VARCHAR(128)
+            )
+        """)
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_certifications_mtp_id ON certifications(mtp_id);")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_certifications_status ON certifications(status);")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_certifications_type ON certifications(cert_type);")
+
         logger.info("Database schema initialized successfully")

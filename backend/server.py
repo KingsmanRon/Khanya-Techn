@@ -10,6 +10,7 @@ from pathlib import Path
 # MTP Imports
 from mtp_core.api import gateway, identity, audit
 from mtp_core.api import disputes, insurance, api_keys
+from mtp_core.api import trust, certifications
 from mtp_core.db.postgres import init_db, db_pool
 from mtp_core.core.config import settings
 from mtp_core.services.batch_processor import batch_processor
@@ -104,6 +105,8 @@ api_router.include_router(audit.router)
 api_router.include_router(disputes.router)
 api_router.include_router(insurance.router)
 api_router.include_router(api_keys.router)
+api_router.include_router(trust.router)
+api_router.include_router(certifications.router)
 
 # Include the router in the main app
 app.include_router(api_router)

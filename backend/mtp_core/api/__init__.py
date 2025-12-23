@@ -7,6 +7,8 @@ API endpoints for the Machine Trust Protocol:
 - disputes: Dispute resolution (MTP-RESOLVE)
 - insurance: Risk profiling and insurance (MTP-INSURE)
 - api_keys: API key management
+- trust: Trust score queries and management (MTP-TRUST)
+- certifications: Certification management (MTP-CERT)
 """
 
 from mtp_core.api import gateway
@@ -15,6 +17,8 @@ from mtp_core.api import audit
 from mtp_core.api import disputes
 from mtp_core.api import insurance
 from mtp_core.api import api_keys
+from mtp_core.api import trust
+from mtp_core.api import certifications
 
 __all__ = [
     'gateway',
@@ -23,4 +27,6 @@ __all__ = [
     'disputes',
     'insurance',
     'api_keys',
+    'trust',
+    'certifications',
 ]
