@@ -1,0 +1,193 @@
+# MTP - Machine Trust Protocol
+# Docker Compose Configuration for Full Stack Development & Production
+
+version: '3.8'
+
+services:
+  # ===========================================
+  # DATABASE LAYER
+  # ===========================================
+
+  postgres:
+    image: timescale/timescaledb:latest-pg16
+    container_name: mtp-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-mtp_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mtp_password}
+      POSTGRES_DB: ${POSTGRES_DB:-mtp_db}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-mtp_user} -d ${POSTGRES_DB:-mtp_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - mtp-network
+
+  # ===========================================
+  # CACHE LAYER (Optional - for production)
+  # ===========================================
+
+  redis:
+    image: redis:7-alpine
+    container_name: mtp-redis
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - mtp-network
+
+  # ===========================================
+  # BACKEND API
+  # ===========================================
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: mtp-backend
+    restart: unless-stopped
+    environment:
+      # Database
+      POSTGRES_URL: postgresql+asyncpg://${POSTGRES_USER:-mtp_user}:${POSTGRES_PASSWORD:-mtp_password}@postgres:5432/${POSTGRES_DB:-mtp_db}
+
+      # Blockchain
+      BASE_L2_RPC_URL: ${BASE_L2_RPC_URL:-https://sepolia.base.org}
+      BASE_L2_PRIVATE_KEY: ${BASE_L2_PRIVATE_KEY:-}
+      MTP_REGISTRY_CONTRACT: ${MTP_REGISTRY_CONTRACT:-}
+
+      # Application
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://localhost:8000}
+
+      # Redis (for WebSocket & caching)
+      REDIS_URL: redis://redis:6379/0
+
+      # Security
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      API_ENCRYPTION_KEY: ${API_ENCRYPTION_KEY:-change-me-in-production}
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    volumes:
+      - ./backend:/app
+      - backend_cache:/app/.cache
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - mtp-network
+    command: uvicorn server:app --host 0.0.0.0 --port 8000 --reload
+
+  # ===========================================
+  # FRONTEND
+  # ===========================================
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: mtp-frontend
+    restart: unless-stopped
+    environment:
+      REACT_APP_BACKEND_URL: ${REACT_APP_BACKEND_URL:-http://localhost:8000}
+      REACT_APP_WS_URL: ${REACT_APP_WS_URL:-ws://localhost:8000}
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    depends_on:
+      - backend
+    networks:
+      - mtp-network
+    command: yarn start
+
+  # ===========================================
+  # MONITORING (Optional - for production)
+  # ===========================================
+
+  # Prometheus for metrics collection
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: mtp-prometheus
+    restart: unless-stopped
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    networks:
+      - mtp-network
+    profiles:
+      - monitoring
+
+  # Grafana for dashboards
+  grafana:
+    image: grafana/grafana:latest
+    container_name: mtp-grafana
+    restart: unless-stopped
+    ports:
+      - "${GRAFANA_PORT:-3001}:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: 'false'
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      - prometheus
+    networks:
+      - mtp-network
+    profiles:
+      - monitoring
+
+# ===========================================
+# NETWORKS
+# ===========================================
+
+networks:
+  mtp-network:
+    driver: bridge
+    name: mtp-network
+
+# ===========================================
+# VOLUMES
+# ===========================================
+
+volumes:
+  postgres_data:
+    name: mtp-postgres-data
+  redis_data:
+    name: mtp-redis-data
+  backend_cache:
+    name: mtp-backend-cache
+  prometheus_data:
+    name: mtp-prometheus-data
+  grafana_data:
+    name: mtp-grafana-data

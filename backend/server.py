@@ -11,6 +11,10 @@ from pathlib import Path
 from mtp_core.api import gateway, identity, audit
 from mtp_core.api import disputes, insurance, api_keys
 from mtp_core.api import trust, certifications
+from mtp_core.api import websocket as ws_api
+from mtp_core.api import monitor as monitor_api
+from mtp_core.services.websocket import ws_manager
+from mtp_core.services.monitor import mtp_monitor
 from mtp_core.db.postgres import init_db, db_pool
 from mtp_core.core.config import settings
 from mtp_core.services.batch_processor import batch_processor
@@ -48,6 +52,13 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Batch processor failed to start: {e}")
 
+    # Start MTP-MONITOR service
+    try:
+        await mtp_monitor.start()
+        logger.info("MTP-MONITOR service started")
+    except Exception as e:
+        logger.error(f"MTP-MONITOR failed to start: {e}")
+
     logger.info(f"Environment: {settings.environment}")
     logger.info(f"Base L2 RPC: {settings.base_l2_rpc_url}")
     logger.info("="*60)
@@ -58,6 +69,7 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     logger.info("Shutting down MTP...")
+    await mtp_monitor.stop()
     await batch_processor.stop()
     await db_pool.disconnect()
 
@@ -95,6 +107,13 @@ async def health():
         "batch_processor": {
             "running": batch_processor._running,
             "pending_events": pending_events
+        },
+        "websocket": {
+            "connected_clients": ws_manager.get_connected_count()
+        },
+        "monitor": {
+            "running": mtp_monitor._running,
+            "active_alerts": len([a for a in mtp_monitor._alerts.values() if not a.acknowledged])
         }
     }
 
@@ -107,6 +126,8 @@ api_router.include_router(insurance.router)
 api_router.include_router(api_keys.router)
 api_router.include_router(trust.router)
 api_router.include_router(certifications.router)
+api_router.include_router(ws_api.router)
+api_router.include_router(monitor_api.router)
 
 # Include the router in the main app
 app.include_router(api_router)
