@@ -56,11 +56,15 @@ db_pool = DatabasePool()
 async def init_db():
     """Initialize database schema"""
     await db_pool.connect()
-    
+
     async with db_pool.acquire() as conn:
-        # Create TimescaleDB extension
-        await conn.execute("CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE;")
-        
+        # Try to create TimescaleDB extension (optional)
+        try:
+            await conn.execute("CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE;")
+            logger.info("TimescaleDB extension enabled")
+        except Exception as e:
+            logger.warning(f"TimescaleDB not available (optional): {e}")
+
         # Organizations table
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS organizations (
