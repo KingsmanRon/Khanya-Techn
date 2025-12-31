@@ -107,23 +107,35 @@ Khanya-Techn/
 │   │   │   ├── trust.py      # Trust score queries
 │   │   │   ├── certifications.py
 │   │   │   ├── insurance.py
-│   │   │   └── disputes.py
+│   │   │   ├── disputes.py
+│   │   │   ├── websocket.py  # WebSocket endpoints
+│   │   │   └── monitor.py    # Alerting API
 │   │   ├── services/         # Business logic
+│   │   │   ├── websocket.py  # WebSocket manager
+│   │   │   └── monitor.py    # MTP-MONITOR service
 │   │   ├── models/           # Pydantic data models
 │   │   ├── core/             # Crypto, Merkle, Config
 │   │   └── db/               # PostgreSQL + TimescaleDB
 │   ├── server.py             # FastAPI application
+│   ├── Dockerfile            # Backend container
 │   └── requirements.txt
 ├── frontend/
 │   ├── src/
-│   │   ├── components/       # UI components
+│   │   ├── components/       # UI components (shadcn/ui)
 │   │   ├── contexts/         # Auth, Theme contexts
+│   │   ├── hooks/            # Custom hooks (useWebSocket)
 │   │   ├── pages/            # Route pages
 │   │   ├── services/         # API client
 │   │   └── App.js            # Router setup
+│   ├── Dockerfile            # Frontend container
 │   └── package.json
 ├── tests/                    # Python tests
-├── scripts/                  # Setup scripts
+│   ├── test_api.py           # API integration tests
+│   ├── test_services.py      # Service unit tests
+│   └── conftest.py           # Pytest fixtures
+├── monitoring/               # Prometheus & Grafana config
+├── .github/workflows/        # CI/CD pipelines
+├── docker-compose.yml        # Full stack containerization
 └── docs/                     # Documentation
 ```
 
@@ -143,12 +155,19 @@ Khanya-Techn/
 
 ## Documentation
 
-- [Architecture Diagram](./ARCHITECTURE.md)
-- [Architecture Details](./mtp-architecture.md)
-- [Integration Guide](./mtp-integration-architecture.md)
-- [Production Additions](./mtp-production-additions.md)
-- [Deployment Guide](./DEPLOYMENT_GUIDE.md)
-- [Project Summary](./PROJECT_SUMMARY.md)
+### Core Documentation
+- [Architecture Diagram](./ARCHITECTURE.md) - System architecture with ASCII diagrams
+- [Architecture Details](./mtp-architecture.md) - Technical architecture deep-dive
+- [Integration Guide](./mtp-integration-architecture.md) - How to integrate with MTP
+
+### Deployment & Operations
+- [Production Checklist](./PRODUCTION_CHECKLIST.md) - **Required credentials & decisions**
+- [Deployment Guide](./DEPLOYMENT_GUIDE.md) - Deployment instructions
+- [Optional Enhancements](./OPTIONAL_ENHANCEMENTS.md) - Future features roadmap
+
+### Reference
+- [Project Summary](./PROJECT_SUMMARY.md) - High-level project overview
+- [Production Additions](./mtp-production-additions.md) - Production considerations
 
 ---
 

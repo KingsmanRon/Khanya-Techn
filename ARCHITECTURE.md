@@ -60,6 +60,8 @@
 │  │   │  /api/v1/disputes    ──────► Dispute Resolution (MTP-RESOLVE)  │    │   │
 │  │   │  /api/v1/blockchain  ──────► Merkle Batches (MTP-CHAIN)        │    │   │
 │  │   │  /api/v1/api-keys    ──────► API Key Management                │    │   │
+│  │   │  /api/ws/connect     ──────► WebSocket Real-time Updates       │    │   │
+│  │   │  /api/v1/monitor     ──────► Alerts & Metrics (MTP-MONITOR)    │    │   │
 │  │   │                                                                 │    │   │
 │  │   └─────────────────────────────┬──────────────────────────────────┘    │   │
 │  │                                 │                                        │   │
@@ -76,10 +78,14 @@
 │  │   │  │  Service    │ │  Service    │ │  Analyzer   │               │    │   │
 │  │   │  └─────────────┘ └─────────────┘ └─────────────┘               │    │   │
 │  │   │                                                                 │    │   │
-│  │   │  ┌─────────────┐ ┌─────────────┐                               │    │   │
-│  │   │  │   Batch     │ │  Dispute    │                               │    │   │
-│  │   │  │ Processor   │ │  Service    │                               │    │   │
-│  │   │  └─────────────┘ └─────────────┘                               │    │   │
+│  │   │  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐               │    │   │
+│  │   │  │   Batch     │ │  Dispute    │ │  WebSocket  │               │    │   │
+│  │   │  │ Processor   │ │  Service    │ │  Manager    │               │    │   │
+│  │   │  └─────────────┘ └─────────────┘ └─────────────┘               │    │   │
+│  │   │                                                                 │    │   │
+│  │   │  ┌─────────────┐                                               │    │   │
+│  │   │  │MTP-MONITOR  │ (Alerting & Metrics Service)                  │    │   │
+│  │   │  └─────────────┘                                               │    │   │
 │  │   │                                                                 │    │   │
 │  │   └─────────────────────────────┬──────────────────────────────────┘    │   │
 │  │                                 │                                        │   │
@@ -723,6 +729,162 @@
 
 ---
 
+## WebSocket Real-time Updates
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                      WEBSOCKET ARCHITECTURE                                  │
+│                    (Real-time Event Streaming)                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │                         FRONTEND CLIENTS                                 │
+  │                                                                         │
+  │   ┌──────────────┐    ┌──────────────┐    ┌──────────────┐             │
+  │   │  Dashboard   │    │ Agent Detail │    │   Audit      │             │
+  │   │   Page       │    │    Page      │    │   Explorer   │             │
+  │   └──────┬───────┘    └──────┬───────┘    └──────┬───────┘             │
+  │          │                   │                   │                      │
+  │          └───────────────────┼───────────────────┘                      │
+  │                              │                                          │
+  │                    ┌─────────▼─────────┐                               │
+  │                    │  useWebSocket()   │                               │
+  │                    │  React Hook       │                               │
+  │                    │  • Auto-reconnect │                               │
+  │                    │  • Subscriptions  │                               │
+  │                    │  • Event handlers │                               │
+  │                    └─────────┬─────────┘                               │
+  │                              │                                          │
+  └──────────────────────────────┼──────────────────────────────────────────┘
+                                 │
+                       WebSocket │ ws://api.mtp.io/api/ws/connect
+                                 │
+  ┌──────────────────────────────┼──────────────────────────────────────────┐
+  │                              ▼                                          │
+  │   ┌─────────────────────────────────────────────────────────────────┐  │
+  │   │                    WEBSOCKET MANAGER                             │  │
+  │   │                  (backend/mtp_core/services/websocket.py)        │  │
+  │   │                                                                  │  │
+  │   │   ┌──────────────────────────────────────────────────────────┐  │  │
+  │   │   │  Connection Pool                                          │  │  │
+  │   │   │  ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐             │  │  │
+  │   │   │  │Client 1│ │Client 2│ │Client 3│ │Client N│             │  │  │
+  │   │   │  │user_id │ │org_id  │ │anon    │ │...     │             │  │  │
+  │   │   │  └────────┘ └────────┘ └────────┘ └────────┘             │  │  │
+  │   │   └──────────────────────────────────────────────────────────┘  │  │
+  │   │                              │                                   │  │
+  │   │   ┌──────────────────────────▼───────────────────────────────┐  │  │
+  │   │   │  Subscription Management                                  │  │  │
+  │   │   │                                                          │  │  │
+  │   │   │  agent_subscriptions: { mtp_id → [client_ids] }          │  │  │
+  │   │   │  org_subscriptions:   { org_id → [client_ids] }          │  │  │
+  │   │   │  event_subscriptions: { event_type → [client_ids] }      │  │  │
+  │   │   └──────────────────────────────────────────────────────────┘  │  │
+  │   └─────────────────────────────────────────────────────────────────┘  │
+  │                              │                                          │
+  │         ┌────────────────────┼────────────────────┐                    │
+  │         │                    │                    │                     │
+  │         ▼                    ▼                    ▼                     │
+  │   ┌───────────┐       ┌───────────┐       ┌───────────┐                │
+  │   │ AUDIT     │       │ TRUST     │       │ KILL      │                │
+  │   │ SERVICE   │       │ SERVICE   │       │ SWITCH    │                │
+  │   │           │       │           │       │           │                │
+  │   │ → broadcast│      │ → broadcast│      │ → broadcast│               │
+  │   │  _audit_  │       │  _trust_  │       │  _kill_   │                │
+  │   │  event()  │       │  update() │       │  switch() │                │
+  │   └───────────┘       └───────────┘       └───────────┘                │
+  │                                                                         │
+  └─────────────────────────────────────────────────────────────────────────┘
+
+  EVENT TYPES:
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │ • audit_event          - New audit event logged                         │
+  │ • audit_batch_anchored - Batch anchored to blockchain                   │
+  │ • trust_score_update   - Agent trust score changed                      │
+  │ • trust_threshold_alert- Trust dropped below threshold                  │
+  │ • kill_switch_triggered- Agent suspended                                │
+  │ • agent_activated      - Agent reactivated                              │
+  │ • certification_granted- New certification issued                       │
+  │ • dispute_filed        - New dispute created                            │
+  │ • system_alert         - MTP-MONITOR alert                              │
+  │ • metrics_update       - System metrics broadcast                       │
+  └─────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## MTP-MONITOR Alerting Service
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         MTP-MONITOR SERVICE                                  │
+│                      (Alerting & Metrics)                                   │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │                        MONITORING LOOP                                   │
+  │                    (runs every 10 seconds)                              │
+  │                                                                         │
+  │   ┌──────────────────────────────────────────────────────────────────┐ │
+  │   │  1. Collect Metrics                                               │ │
+  │   │     • WebSocket client count                                      │ │
+  │   │     • Batch processor status                                      │ │
+  │   │     • Pending events count                                        │ │
+  │   │     • Active alert count                                          │ │
+  │   └───────────────────────────────┬──────────────────────────────────┘ │
+  │                                   │                                     │
+  │   ┌───────────────────────────────▼──────────────────────────────────┐ │
+  │   │  2. Check Monitoring Rules                                        │ │
+  │   │     • Trust score thresholds                                      │ │
+  │   │     • Error rate thresholds                                       │ │
+  │   │     • System health checks                                        │ │
+  │   └───────────────────────────────┬──────────────────────────────────┘ │
+  │                                   │                                     │
+  │   ┌───────────────────────────────▼──────────────────────────────────┐ │
+  │   │  3. Broadcast Metrics                                             │ │
+  │   │     → WebSocket: metrics_update event                            │ │
+  │   └──────────────────────────────────────────────────────────────────┘ │
+  └─────────────────────────────────────────────────────────────────────────┘
+
+  ALERT TRIGGERS:
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │                                                                         │
+  │   TRUST SCORE MONITORING                                               │
+  │   ┌────────────────────────────────────────────────────────────────┐  │
+  │   │  • Trust < 300 → CRITICAL alert                                 │  │
+  │   │  • Trust < 500 → WARNING alert                                  │  │
+  │   │  • Trust drop > 10% → WARNING alert                             │  │
+  │   └────────────────────────────────────────────────────────────────┘  │
+  │                                                                         │
+  │   SYSTEM HEALTH MONITORING                                             │
+  │   ┌────────────────────────────────────────────────────────────────┐  │
+  │   │  • Error rate > 10% → WARNING/CRITICAL                          │  │
+  │   │  • Batch anchor failure → CRITICAL                              │  │
+  │   │  • Kill switch triggered → EMERGENCY                            │  │
+  │   └────────────────────────────────────────────────────────────────┘  │
+  │                                                                         │
+  │   ALERT SEVERITIES                                                     │
+  │   ┌────────────────────────────────────────────────────────────────┐  │
+  │   │  INFO      → Informational, no action required                  │  │
+  │   │  WARNING   → Attention needed, not urgent                       │  │
+  │   │  CRITICAL  → Immediate attention required                       │  │
+  │   │  EMERGENCY → Kill switch or system failure                      │  │
+  │   └────────────────────────────────────────────────────────────────┘  │
+  │                                                                         │
+  └─────────────────────────────────────────────────────────────────────────┘
+
+  API ENDPOINTS:
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │  GET  /api/v1/monitor/alerts          - List alerts (with filters)     │
+  │  GET  /api/v1/monitor/alerts/{id}     - Get specific alert             │
+  │  POST /api/v1/monitor/alerts/{id}/acknowledge - Acknowledge alert      │
+  │  GET  /api/v1/monitor/metrics         - Get current metrics            │
+  │  GET  /api/v1/monitor/status          - Get monitoring service status  │
+  └─────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
 ## Version History
 
 | Version | Date | Changes |
@@ -730,6 +892,7 @@
 | 0.1.0 | Dec 2024 | MVP - Core enforcement system |
 | 0.2.0 | Dec 2024 | Added MTP-TRUST, MTP-CERT services |
 | 0.3.0 | Dec 2024 | Complete frontend dashboard |
+| 0.4.0 | Dec 2024 | Production infrastructure (Docker, CI/CD, WebSocket, MTP-MONITOR) |
 
 ---
 
